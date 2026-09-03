@@ -7899,11 +7899,17 @@ async function exportPublish() {
       F29_MAN: F29_MAN,
       H2_NC_DATA: H2_NC_DATA,
     };
-    // Usar outerHTML del documento actual (funciona en file:// y https://)
-    const snapJSON = JSON.stringify(snap);
-    const snapTag = '<script>window._SNAP=' + snapJSON + ';<\/script>';
+    // Escapar JSON para que sea seguro dentro de un <script> tag en HTML
+    // (evita que </script> dentro del JSON rompa el tag silenciosamente)
+    const snapJSON = JSON.stringify(snap)
+      .replace(/&/g, '\\u0026')
+      .replace(/</g, '\\u003C')
+      .replace(/>/g, '\\u003E')
+      .replace(/\//g, '\\u002F');
+    const snapTag = '<script id="__snap__">window._SNAP=' + snapJSON + ';<\/script>';
     let src = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-    // Eliminar cualquier snapshot previo (puede estar en head o en el script inline)
+    // Eliminar cualquier snapshot previo (busca por id o por patrón)
+    src = src.replace(/<script id="__snap__">[\s\S]*?<\/script>/g, '');
     src = src.replace(/<script>window\._SNAP=[\s\S]*?;<\/script>/g, '');
     // Inyectar nuevo snapshot al inicio del <head>
     src = src.replace('<head>', '<head>\n' + snapTag);
