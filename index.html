@@ -560,6 +560,18 @@
 </head>
 <body>
 
+<!-- ── BARRA GUARDAR/CARGAR DATOS (siempre visible) ── -->
+<div id="datos-bar" style="position:fixed;bottom:0;left:0;right:0;z-index:8500;background:#0d1b2a;border-top:1px solid #1f2d45;padding:7px 20px;display:flex;align-items:center;gap:10px;font-size:12px;">
+  <span style="color:#64748b;font-weight:600;letter-spacing:.3px">DATOS:</span>
+  <button onclick="guardarDatosJSON()" title="Descarga un archivo lifty-datos.json con todos tus datos (honorarios, F29, facturas…)" style="background:#6366f1;color:#fff;border:none;padding:5px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">💾 Guardar Datos</button>
+  <label title="Carga un archivo lifty-datos.json guardado anteriormente" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;padding:5px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">
+    📂 Cargar Datos<input type="file" accept=".json" onchange="cargarDatosJSON(this)" style="display:none">
+  </label>
+  <span id="datos-bar-status" style="color:#64748b;font-size:11px;margin-left:6px"></span>
+  <span style="flex:1"></span>
+  <span id="datos-bar-ts" style="color:#475569;font-size:11px"></span>
+</div>
+<div style="height:40px"></div><!-- spacer para que el contenido no quede tapado por la barra -->
 
 <!-- ── LOGIN OVERLAY ── -->
 <div id="login-overlay">
@@ -2393,7 +2405,11 @@ function saveState() {
     F29_MAN: F29_MAN,
     H2_NC_DATA: H2_NC_DATA,
   };
-  try { localStorage.setItem(PANEL_KEY, JSON.stringify(state)); showLastMod(state.ts); } catch(e) {}
+  var stateJSON = JSON.stringify(state);
+  var lsOk = false;
+  try { localStorage.setItem(PANEL_KEY, stateJSON); lsOk = true; } catch(e) { console.warn('localStorage save failed:', e); }
+  try { sessionStorage.setItem(PANEL_KEY, stateJSON); } catch(e) {}
+  if (lsOk) showLastMod(state.ts);
 }
 
 function _propagateRealH2toEER12() {
@@ -2415,22 +2431,27 @@ function loadState() {
   // Siempre propagar H2_FACTURAS a EER12 al iniciar (con o sin localStorage)
   syncH2IngresosToEER12();
   try {
-    // Prioridad: snapshot embebido (versión publicada) > localStorage (edición personal)
-    // Elegir el estado más reciente entre localStorage y _SNAP embebido
-    const localRaw = localStorage.getItem(PANEL_KEY);
+    // Prioridad: _SNAP embebido vs localStorage vs sessionStorage (usar el más reciente)
+    const localRaw = (function() {
+      try { return localStorage.getItem(PANEL_KEY); } catch(e) { return null; }
+    })();
+    const sessRaw = (function() {
+      try { return sessionStorage.getItem(PANEL_KEY); } catch(e) { return null; }
+    })();
     const localState = localRaw ? JSON.parse(localRaw) : null;
-    const snapState = window._SNAP || null;
-    let state;
-    if (localState && snapState) {
-      // Usar el que tenga timestamp más reciente
-      state = new Date(localState.ts || 0) >= new Date(snapState.ts || 0) ? localState : snapState;
-    } else {
-      state = localState || snapState;
-    }
+    const sessState  = sessRaw  ? JSON.parse(sessRaw)  : null;
+    const snapState  = window._SNAP || null;
+    // Seleccionar el estado más reciente entre los tres
+    const candidates = [localState, sessState, snapState].filter(Boolean);
+    if (!candidates.length) return;
+    let state = candidates.reduce(function(best, cur) {
+      return new Date(cur.ts || 0) > new Date(best.ts || 0) ? cur : best;
+    });
     if (!state) return;
-    // Si usamos _SNAP (más nuevo), sincronizarlo a localStorage para próximas cargas
+    // Sincronizar el ganador a localStorage/sessionStorage para próximas cargas
     if (state === snapState && snapState) {
       try { localStorage.setItem(PANEL_KEY, JSON.stringify(snapState)); } catch(e) {}
+      try { sessionStorage.setItem(PANEL_KEY, JSON.stringify(snapState)); } catch(e) {}
     }
 
     // Restore REAL_H2
@@ -7022,14 +7043,17 @@ function bdhConfirmarLote() {
       liquido:        b.liquido,
     });
   });
+  var nBoletas = bdhLote.length;
   saveState();
   bdhUpdateKPIs();
   bdhRenderTable();
   f29BuildTable(); f29BuildKPIs(); f29BuildCharts();
   syncBdhToHonorarios();
   bdhCancelarLote();
-  bdhSetStatus('✅ ' + bdhLote.length + ' boletas agregadas correctamente.', 'ok');
+  bdhSetStatus('✅ ' + nBoletas + ' boletas agregadas correctamente.', 'ok');
   bdhLote = [];
+  marcarCambiosPendientes();
+  autoGuardar(nBoletas + ' boleta(s) de honorarios');
 }
 
 function bdhCancelarLote() {
@@ -7559,19 +7583,23 @@ function f29BuildTable() {
 function f29SetNC(m, raw) {
   F29_MAN.nc_neto[m] = parseInt((raw||'0').replace(/\./g,'').replace(/,/g,'')) || 0;
   saveState(); f29BuildTable(); f29BuildKPIs(); f29BuildCharts();
+  marcarCambiosPendientes();
 }
 function f29SetCred(m, raw) {
   F29_MAN.iva_cred[m] = parseInt((raw||'0').replace(/\./g,'').replace(/,/g,'')) || 0;
   saveState(); f29BuildTable(); f29BuildKPIs(); f29BuildCharts();
+  marcarCambiosPendientes();
 }
 function f29SetPPM(m, raw) {
   F29_MAN.tasa_ppm[m] = parseFloat(raw) || 0.125;
   saveState(); f29BuildTable(); f29BuildKPIs(); f29BuildCharts();
+  marcarCambiosPendientes();
 }
 function f29SetReal(m, raw) {
   const v = parseInt((raw||'').replace(/\./g,'').replace(/,/g,'')) || 0;
   F29_MAN.real[m] = v || null;
   saveState(); f29BuildTable();
+  marcarCambiosPendientes();
 }
 
 function f29BuildCharts() {
@@ -7692,6 +7720,8 @@ function f29HandleFiles(files) {
     if (log) log.innerHTML = logHtml;
     saveState();
     f29BuildTable(); f29BuildKPIs(); f29BuildCharts(); f29BuildRealGrid();
+    marcarCambiosPendientes();
+    autoGuardar('F29 PDF importado');
   });
 }
 
@@ -7863,17 +7893,229 @@ function f29ExportCSV() {
   a.click();
 }
 
+// ─── GUARDAR / CARGAR DATOS (JSON pequeño, siempre funciona) ─────────────────
+function guardarDatosJSON() {
+  try {
+    var srInputs = {};
+    ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'].forEach(function(m) {
+      var el = document.getElementById('sr-' + m); if (el) srInputs[m] = el.value;
+    });
+    var btInputs = {};
+    ['bt-caja-monto','bt-ing-falt','bt-hon-equipo','bt-hon-dir','bt-impuestos','bt-tarjeta','bt-otros-egr'].forEach(function(id) {
+      var el = document.getElementById(id); if (el) btInputs[id] = el.value;
+    });
+    var datos = {
+      _version: 2,
+      ts: new Date().toISOString(),
+      BDH_DATA:        BDH_DATA,
+      F29_MAN:         F29_MAN,
+      H2_FACTURAS:     H2_FACTURAS,
+      H2_NC_DATA:      H2_NC_DATA,
+      REAL_H2:         REAL_H2,
+      CAJA_POR_MES:    CAJA_POR_MES,
+      CFO_CARTOLA_REAL:CFO_CARTOLA_REAL,
+      TS_MODS:         TS_MODS,
+      dirCajaManual:   dirCajaManual,
+      dirCajaAct:      dirCajaAct,
+      dirCajaLibre:    dirCajaLibre,
+      activePeriod:    activePeriod,
+      srInputs:        srInputs,
+      btInputs:        btInputs,
+      EER12_caja:      { cajaIng:[...EER12.cajaIng], cajaEgr:[...EER12.cajaEgr], cajaVar:[...EER12.cajaVar], cajaFinal:[...EER12.cajaFinal] },
+    };
+    var json = JSON.stringify(datos, null, 2);
+    var blob = new Blob([json], {type:'application/json;charset=utf-8'});
+    var a = document.createElement('a');
+    var fecha = new Date().toISOString().slice(0,10).replace(/-/g,'');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'lifty-datos-' + fecha + '.json';
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); document.body.removeChild(a); }, 3000);
+    var st = document.getElementById('datos-bar-status');
+    if (st) st.textContent = '✅ Datos guardados (' + BDH_DATA.length + ' boletas, F29 ok)';
+    var ts = document.getElementById('datos-bar-ts');
+    if (ts) ts.textContent = 'Guardado ' + new Date().toLocaleTimeString('es-CL');
+    limpiarCambiosPendientes();
+  } catch(e) {
+    alert('Error al guardar datos: ' + e.message);
+  }
+}
+
+function cargarDatosJSON(input) {
+  var file = input.files && input.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var datos = JSON.parse(e.target.result);
+      if (!datos._version) throw new Error('Archivo no reconocido');
+      // Restaurar datos
+      if (Array.isArray(datos.BDH_DATA))    BDH_DATA    = datos.BDH_DATA;
+      if (datos.F29_MAN) {
+        ['nc_neto','iva_cred','tasa_ppm','real'].forEach(function(k) {
+          if (Array.isArray(datos.F29_MAN[k]) && datos.F29_MAN[k].length === 12)
+            F29_MAN[k] = datos.F29_MAN[k];
+        });
+      }
+      if (Array.isArray(datos.H2_FACTURAS))  H2_FACTURAS  = datos.H2_FACTURAS;
+      if (Array.isArray(datos.H2_NC_DATA))   H2_NC_DATA   = datos.H2_NC_DATA;
+      if (datos.REAL_H2) {
+        Object.keys(REAL_H2).forEach(function(k) {
+          if (Array.isArray(datos.REAL_H2[k])) REAL_H2[k] = datos.REAL_H2[k];
+        });
+      }
+      if (datos.CAJA_POR_MES)    CAJA_POR_MES    = datos.CAJA_POR_MES;
+      if (datos.CFO_CARTOLA_REAL)CFO_CARTOLA_REAL = datos.CFO_CARTOLA_REAL;
+      if (datos.TS_MODS)         TS_MODS         = datos.TS_MODS;
+      if (datos.dirCajaManual !== undefined) dirCajaManual = datos.dirCajaManual;
+      if (datos.dirCajaAct    !== undefined) dirCajaAct    = datos.dirCajaAct;
+      if (datos.dirCajaLibre  !== undefined) dirCajaLibre  = datos.dirCajaLibre;
+      if (datos.EER12_caja) {
+        ['cajaIng','cajaEgr','cajaVar','cajaFinal'].forEach(function(k) {
+          if (Array.isArray(datos.EER12_caja[k])) EER12[k] = datos.EER12_caja[k];
+        });
+      }
+      // Restaurar inputs CFO si la pestaña está abierta
+      if (datos.srInputs) {
+        window._pendingSrInputs = datos.srInputs;
+        Object.keys(datos.srInputs).forEach(function(m) {
+          var el = document.getElementById('sr-' + m); if (el) el.value = datos.srInputs[m];
+        });
+      }
+      if (datos.btInputs) {
+        window._pendingBtInputs = datos.btInputs;
+        Object.keys(datos.btInputs).forEach(function(id) {
+          var el = document.getElementById(id); if (el) el.value = datos.btInputs[id];
+        });
+      }
+      // Sincronizar honorarios al P&L
+      syncBdhToHonorarios();
+      syncH2IngresosToEER12();
+      applyRealData();
+      rebuildAll();
+      if (builtDash[4]) { bdhUpdateKPIs(); bdhRenderTable(); }
+      if (builtDash[8]) { f29BuildTable(); f29BuildKPIs(); f29BuildCharts(); f29BuildRealGrid(); }
+      saveState();
+      var ndatos = (datos.BDH_DATA ? datos.BDH_DATA.length : 0);
+      var st = document.getElementById('datos-bar-status');
+      if (st) st.textContent = '✅ Cargados: ' + ndatos + ' boleta(s), F29 ok';
+      var ts = document.getElementById('datos-bar-ts');
+      if (ts) ts.textContent = 'Cargado desde: ' + file.name;
+      limpiarCambiosPendientes();
+      showToast('✅ Datos cargados correctamente — ' + ndatos + ' boleta(s), F29, facturas.', 4000);
+    } catch(err) {
+      alert('Error al cargar datos: ' + err.message);
+    }
+    input.value = '';
+  };
+  reader.readAsText(file);
+}
+
+// ─── AUTO-GUARDAR: embebe _SNAP y descarga el archivo actualizado ────────────
+let _autoGuardarPending = false;
+function marcarCambiosPendientes() {
+  _autoGuardarPending = true;
+  var st = document.getElementById('datos-bar-status');
+  if (st) st.textContent = '⚠️ Cambios sin guardar — haz clic en 💾 Guardar Datos';
+  if (st) st.style.color = '#fbbf24';
+}
+function limpiarCambiosPendientes() {
+  _autoGuardarPending = false;
+  var st = document.getElementById('datos-bar-status');
+  if (st) { st.textContent = ''; st.style.color = ''; }
+}
+
+async function autoGuardar(contexto) {
+  // Construir _SNAP igual que exportPublish
+  try {
+    const srInputs = Object.assign({}, window._pendingSrInputs || {});
+    ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'].forEach(function(m) {
+      const el = document.getElementById('sr-' + m); if (el) srInputs[m] = el.value;
+    });
+    const btInputs = Object.assign({}, window._pendingBtInputs || {});
+    ['bt-caja-monto','bt-ing-falt','bt-hon-equipo','bt-hon-dir','bt-impuestos','bt-tarjeta','bt-otros-egr'].forEach(function(id) {
+      const el = document.getElementById(id); if (el) btInputs[id] = el.value;
+    });
+    const snap = {
+      ts: new Date().toISOString(),
+      REAL_H2: REAL_H2, H2_FACTURAS: H2_FACTURAS, CAJA_POR_MES: CAJA_POR_MES, TS_MODS: TS_MODS,
+      dirCajaManual: dirCajaManual, dirCajaAct: dirCajaAct, dirCajaLibre: dirCajaLibre,
+      srInputs: srInputs, btInputs: btInputs,
+      ciBurn:  (document.getElementById('ci-burn')  ||{}).value || window._pendingCiBurn  || '',
+      ciMeses: (document.getElementById('ci-meses') ||{}).value || window._pendingCiMeses || '',
+      ciPct:   (document.getElementById('ci-pct')   ||{}).value || window._pendingCiPct   || '',
+      activePeriod: activePeriod,
+      EER12_caja: { cajaIng:[...EER12.cajaIng], cajaEgr:[...EER12.cajaEgr], cajaVar:[...EER12.cajaVar], cajaFinal:[...EER12.cajaFinal] },
+      CFO_CARTOLA_REAL: CFO_CARTOLA_REAL, BDH_DATA: BDH_DATA, F29_MAN: F29_MAN, H2_NC_DATA: H2_NC_DATA,
+    };
+    const snapJSON = JSON.stringify(snap)
+      .replace(/&/g, '\\u0026').replace(/</g, '\\u003C')
+      .replace(/>/g, '\\u003E').replace(/\//g, '\\u002F');
+    const snapTag = '<script id="__snap__">window._SNAP=' + snapJSON + ';<\/script>';
+    // Guardar también en memoria
+    window._SNAP = snap;
+    // Obtener fuente del archivo
+    let src;
+    try {
+      const resp = await fetch(window.location.href);
+      if (!resp.ok) throw new Error('status ' + resp.status);
+      src = await resp.text();
+    } catch(fe) {
+      src = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+    }
+    src = src.replace(/<script id="__snap__">[\s\S]*?<\/script>/g, '');
+    src = src.replace(/<script>window\._SNAP=[\s\S]*?;<\/script>/g, '');
+    src = src.replace('<head>', function() { return '<head>\n' + snapTag; });
+    // Intentar File System Access API (escribe directo al archivo, sin cuadro de diálogo en algunos entornos)
+    if (window.showSaveFilePicker) {
+      try {
+        const fh = await window.showSaveFilePicker({ suggestedName: 'index.html', types: [{ description: 'HTML', accept: { 'text/html': ['.html'] } }] });
+        const writable = await fh.createWritable();
+        await writable.write(new Blob([src], {type:'text/html;charset=utf-8'}));
+        await writable.close();
+        limpiarCambiosPendientes();
+        showToast('✅ Archivo guardado' + (contexto ? ' — ' + contexto : ''), 3000);
+        return;
+      } catch(fse) { /* usuario canceló o no disponible → fallback a descarga */ }
+    }
+    // Fallback: descarga normal
+    const blob = new Blob([src], {type:'text/html;charset=utf-8'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'index.html';
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); document.body.removeChild(a); }, 5000);
+    limpiarCambiosPendientes();
+    showToast('💾 Archivo descargado con ' + (contexto || 'datos actualizados') + '. Reemplaza tu index.html con este archivo.', 7000);
+  } catch(err) {
+    console.error('autoGuardar error:', err);
+    showToast('⚠️ Error al guardar: ' + err.message, 5000);
+  }
+}
+
+function showToast(msg, ms) {
+  var t = document.getElementById('lifty-toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'lifty-toast';
+    t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1a2236;border:1px solid #6366f1;color:#f1f5f9;padding:12px 24px;border-radius:10px;font-size:13px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.5);max-width:500px;text-align:center;transition:opacity .3s';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg; t.style.opacity = '1'; t.style.display = 'block';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(function(){ t.style.opacity='0'; setTimeout(function(){ t.style.display='none'; },300); }, ms || 4000);
+}
+
 // ─── EXPORTAR CON DATOS INCRUSTADOS (para publicar en GitHub/Netlify) ───────
 async function exportPublish() {
   const btn = document.getElementById('btn-publish');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando...'; }
   try {
     // Recolectar estado completo (igual que saveState)
-    const srInputs = {};
+    // Prioridad: DOM (tab abierto) → _pending* (estado restaurado, tab no abierto aún)
+    const srInputs = Object.assign({}, window._pendingSrInputs || {});
     ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'].forEach(function(m) {
       const el = document.getElementById('sr-' + m); if (el) srInputs[m] = el.value;
     });
-    const btInputs = {};
+    const btInputs = Object.assign({}, window._pendingBtInputs || {});
     ['bt-caja-monto','bt-ing-falt','bt-hon-equipo','bt-hon-dir','bt-impuestos','bt-tarjeta','bt-otros-egr'].forEach(function(id) {
       const el = document.getElementById(id); if (el) btInputs[id] = el.value;
     });
@@ -7888,9 +8130,9 @@ async function exportPublish() {
       dirCajaLibre: dirCajaLibre,
       srInputs: srInputs,
       btInputs: btInputs,
-      ciBurn:  (document.getElementById('ci-burn')  ||{}).value || '',
-      ciMeses: (document.getElementById('ci-meses') ||{}).value || '',
-      ciPct:   (document.getElementById('ci-pct')   ||{}).value || '',
+      ciBurn:  (document.getElementById('ci-burn')  ||{}).value || window._pendingCiBurn  || '',
+      ciMeses: (document.getElementById('ci-meses') ||{}).value || window._pendingCiMeses || '',
+      ciPct:   (document.getElementById('ci-pct')   ||{}).value || window._pendingCiPct   || '',
       activePeriod: activePeriod,
       EER12_caja: { cajaIng:[...EER12.cajaIng], cajaEgr:[...EER12.cajaEgr], cajaVar:[...EER12.cajaVar], cajaFinal:[...EER12.cajaFinal] },
       cartolaApplied: _cartolaData ? { mesIdx:_cartolaData.mesIdx, inflows:_cartolaData.inflows, outflows:_cartolaData.outflows, rowCount:(_cartolaData.rows||[]).length, fname:_cartolaData.fname||'—', ts:_cartolaData.appliedAt||new Date().toISOString() } : null,
@@ -7899,20 +8141,34 @@ async function exportPublish() {
       F29_MAN: F29_MAN,
       H2_NC_DATA: H2_NC_DATA,
     };
-    // Escapar JSON para que sea seguro dentro de un <script> tag en HTML
-    // (evita que </script> dentro del JSON rompa el tag silenciosamente)
+    // Escapar JSON para que sea seguro dentro de un script tag en HTML
+    // (evita que <\/script> dentro del JSON rompa el tag silenciosamente)
     const snapJSON = JSON.stringify(snap)
       .replace(/&/g, '\\u0026')
       .replace(/</g, '\\u003C')
       .replace(/>/g, '\\u003E')
       .replace(/\//g, '\\u002F');
     const snapTag = '<script id="__snap__">window._SNAP=' + snapJSON + ';<\/script>';
-    let src = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-    // Eliminar cualquier snapshot previo (busca por id o por patrón)
+
+    // Obtener fuente original via fetch (más confiable que outerHTML — evita
+    // problemas de serialización del DOM y entidades HTML en <script> tags)
+    let src;
+    try {
+      const resp = await fetch(window.location.href);
+      if (!resp.ok) throw new Error('fetch status ' + resp.status);
+      src = await resp.text();
+    } catch(fetchErr) {
+      // Fallback: outerHTML si fetch falla (ej. CSP en Netlify)
+      src = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+    }
+
+    // Eliminar cualquier snapshot previo
     src = src.replace(/<script id="__snap__">[\s\S]*?<\/script>/g, '');
     src = src.replace(/<script>window\._SNAP=[\s\S]*?;<\/script>/g, '');
     // Inyectar nuevo snapshot al inicio del <head>
-    src = src.replace('<head>', '<head>\n' + snapTag);
+    // Usar función como reemplazo para evitar que $ sea interpretado como
+    // patrón especial de String.replace (ej: $1, $&, $')
+    src = src.replace('<head>', function() { return '<head>\n' + snapTag; });
     // Descargar
     const blob = new Blob([src], {type: 'text/html;charset=utf-8'});
     const a = document.createElement('a');
@@ -7921,6 +8177,7 @@ async function exportPublish() {
     document.body.appendChild(a);
     a.click();
     setTimeout(function(){ URL.revokeObjectURL(a.href); document.body.removeChild(a); }, 5000);
+    limpiarCambiosPendientes();
     if (btn) { btn.disabled = false; btn.textContent = '✅ Descargado'; setTimeout(function(){ btn.textContent = '⬆ Publicar'; }, 3000); }
   } catch(err) {
     alert('Error al exportar: ' + err.message);
